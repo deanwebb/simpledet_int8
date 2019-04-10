@@ -1,7 +1,7 @@
 from __future__ import print_function
 
 import mxnext as X
-
+import mxnet as mx
 
 class FasterRcnn(object):
     def __init__(self):
@@ -234,7 +234,207 @@ class RpnHead(object):
 
         return bbox, label, bbox_target, bbox_weight
 
+class RpnHeadINT8(object):
+    def __init__(self, pRpn):
+        self.p = pRpn  # type: RPNParam
 
+        self._cls_logit             = None
+        self._bbox_delta            = None
+        self._proposal              = None
+
+    def get_output(self, conv_feat):
+        if self._cls_logit is not None and self._bbox_delta is not None:
+            return self._cls_logit, self._bbox_delta
+
+        p = self.p
+        num_base_anchor = len(p.anchor_generate.ratio) * len(p.anchor_generate.scale)
+        conv_channel = p.head.conv_channel
+        conv_dot = p.head.conv_dot
+
+        #allocate weight and perform quant on weight
+        weight = mx.sym.Variable(name = "rpn_conv_3x3_weight",shape=(conv_channel,conv_dot,3,3))
+        weight_q = mx.sym.Quantization_int8(weight)
+        conv = X.convrelu(
+            conv_feat,
+            kernel=3,
+            filter=conv_channel,
+            name="rpn_conv_3x3",
+            no_bias=False,
+            init=X.gauss(0.01),
+            weight=weight_q
+        )
+        
+        conv_q = mx.sym.Quantization_int8(data=conv,is_weight=False,\
+                                           ema_decay=0.99,delay_quant=0)
+        if p.fp16:
+            conv = X.to_fp32(conv, name="rpn_conv_3x3_fp32")
+        
+        weight = mx.sym.Variable(name = "rpn_cls_logit_weight",shape=(2 * num_base_anchor,conv_channel,1,1))
+        weight_q = mx.sym.Quantization_int8(weight)
+        cls_logit = X.conv(
+            conv_q,
+            filter=2 * num_base_anchor,
+            name="rpn_cls_logit",
+            no_bias=False,
+            init=X.gauss(0.01),
+            weight=weight_q
+        )
+
+        weight = mx.sym.Variable(name = "rpn_bbox_delta_weight",shape=(4 * num_base_anchor,conv_channel,1,1))
+        weight_q = mx.sym.Quantization_int8(weight)
+        bbox_delta = X.conv(
+            conv,
+            filter=4 * num_base_anchor,
+            name="rpn_bbox_delta",
+            no_bias=False,
+            init=X.gauss(0.01),
+            weight=weight_q
+        )
+
+        self._cls_logit = cls_logit
+        self._bbox_delta = bbox_delta
+
+        return self._cls_logit, self._bbox_delta
+
+    def get_anchor_target(self, conv_feat):
+        raise NotImplementedError
+
+    def get_loss(self, conv_feat, cls_label, bbox_target, bbox_weight):
+        p = self.p
+        batch_image = p.batch_image
+        image_anchor = p.anchor_generate.image_anchor
+
+        cls_logit, bbox_delta = self.get_output(conv_feat)
+
+        scale_loss_shift = 128.0 if p.fp16 else 1.0
+
+        # classification loss
+        cls_logit_reshape = X.reshape(
+            cls_logit,
+            shape=(0, -4, 2, -1, 0, 0),  # (N,C,H,W) -> (N,2,C/2,H,W)
+            name="rpn_cls_logit_reshape"
+        )
+        cls_loss = X.softmax_output(
+            data=cls_logit_reshape,
+            label=cls_label,
+            multi_output=True,
+            normalization='valid',
+            use_ignore=True,
+            ignore_label=-1,
+            grad_scale=1.0 * scale_loss_shift,
+            name="rpn_cls_loss"
+        )
+
+        # regression loss
+        reg_loss = X.smooth_l1(
+            (bbox_delta - bbox_target),
+            scalar=3.0,
+            name='rpn_reg_l1'
+        )
+        reg_loss = bbox_weight * reg_loss
+        reg_loss = X.loss(
+            reg_loss,
+            grad_scale=1.0 / (batch_image * image_anchor) * scale_loss_shift,
+            name='rpn_reg_loss'
+        )
+
+        return cls_loss, reg_loss
+
+    def get_all_proposal(self, conv_feat, im_info):
+        if self._proposal is not None:
+            return self._proposal
+
+        p = self.p
+        rpn_stride = p.anchor_generate.stride
+        anchor_scale = p.anchor_generate.scale
+        anchor_ratio = p.anchor_generate.ratio
+        pre_nms_top_n = p.proposal.pre_nms_top_n
+        post_nms_top_n = p.proposal.post_nms_top_n
+        nms_thr = p.proposal.nms_thr
+        min_bbox_side = p.proposal.min_bbox_side
+
+        cls_logit, bbox_delta = self.get_output(conv_feat)
+
+        # TODO: remove this reshape hell
+        cls_logit_reshape = X.reshape(
+            cls_logit,
+            shape=(0, -4, 2, -1, 0, 0),  # (N,C,H,W) -> (N,2,C/2,H,W)
+            name="rpn_cls_logit_reshape_"
+        )
+        cls_score = X.softmax(
+            cls_logit_reshape,
+            axis=1,
+            name='rpn_cls_score'
+        )
+        cls_logit_reshape = X.reshape(
+            cls_score,
+            shape=(0, -3, 0, 0),
+            name='rpn_cls_score_reshape'
+        )
+
+        # TODO: ask all to add is_train filed in RPNParam
+        proposal = X.proposal(
+            cls_prob=cls_logit_reshape,
+            bbox_pred=bbox_delta,
+            im_info=im_info,
+            name='proposal',
+            feature_stride=rpn_stride,
+            scales=tuple(anchor_scale),
+            ratios=tuple(anchor_ratio),
+            rpn_pre_nms_top_n=pre_nms_top_n,
+            rpn_post_nms_top_n=post_nms_top_n,
+            threshold=nms_thr,
+            rpn_min_size=min_bbox_side,
+            iou_loss=False
+        )
+
+        self._proposal = proposal
+
+        return proposal
+
+    def get_sampled_proposal(self, conv_feat, gt_bbox, im_info):
+        p = self.p
+
+        batch_image = p.batch_image
+
+        proposal_wo_gt = p.subsample_proposal.proposal_wo_gt
+        image_roi = p.subsample_proposal.image_roi
+        fg_fraction = p.subsample_proposal.fg_fraction
+        fg_thr = p.subsample_proposal.fg_thr
+        bg_thr_hi = p.subsample_proposal.bg_thr_hi
+        bg_thr_lo = p.subsample_proposal.bg_thr_lo
+
+        num_reg_class = p.bbox_target.num_reg_class
+        class_agnostic = p.bbox_target.class_agnostic
+        bbox_target_weight = p.bbox_target.weight
+        bbox_target_mean = p.bbox_target.mean
+        bbox_target_std = p.bbox_target.std
+
+        proposal = self.get_all_proposal(conv_feat, im_info)
+
+        (bbox, label, bbox_target, bbox_weight) = X.proposal_target(
+            rois=proposal,
+            gt_boxes=gt_bbox,
+            num_classes=num_reg_class,
+            class_agnostic=class_agnostic,
+            batch_images=batch_image,
+            proposal_without_gt=proposal_wo_gt,
+            image_rois=image_roi,
+            fg_fraction=fg_fraction,
+            fg_thresh=fg_thr,
+            bg_thresh_hi=bg_thr_hi,
+            bg_thresh_lo=bg_thr_lo,
+            bbox_weight=bbox_target_weight,
+            bbox_mean=bbox_target_mean,
+            bbox_std=bbox_target_std,
+            name="subsample_proposal"
+        )
+
+        label = X.reshape(label, (-3, -2))
+        bbox_target = X.reshape(bbox_target, (-3, -2))
+        bbox_weight = X.reshape(bbox_weight, (-3, -2))
+
+        return bbox, label, bbox_target, bbox_weight
 class BboxHead(object):
     def __init__(self, pBbox):
         self.p = pBbox  # type: BboxParam
@@ -622,8 +822,37 @@ class RoiAlign(RoiExtractor):
             roi_feat = X.to_fp16(roi_feat, "roi_feat_to_fp16")
 
         roi_feat = X.reshape(roi_feat, (-3, -2))
-
+       
         return roi_feat
+
+    def get_roi_feature_test(self, rcnn_feat, proposal):
+        return self.get_roi_feature(rcnn_feat, proposal)
+
+class RoiAlignINT8(RoiExtractor):
+    def __init__(self, pRoi):
+        super(RoiAlign, self).__init__(pRoi)
+
+    def get_roi_feature(self, rcnn_feat, proposal):
+        p = self.p
+
+        if p.fp16:
+            rcnn_feat = X.to_fp32(rcnn_feat, "rcnn_feat_to_fp32")
+
+        roi_feat = X.roi_align(
+            rcnn_feat,
+            rois=proposal,
+            out_size=p.out_size,
+            stride=p.stride,
+            name="roi_align"
+        )
+
+        if p.fp16:
+            roi_feat = X.to_fp16(roi_feat, "roi_feat_to_fp16")
+
+        roi_feat = X.reshape(roi_feat, (-3, -2))
+        roi_feat_q = mx.sym.Quantization_int8(data=roi_feat,is_weight=False,\
+                                           ema_decay=0.99,delay_quant=0)
+        return roi_feat_q
 
     def get_roi_feature_test(self, rcnn_feat, proposal):
         return self.get_roi_feature(rcnn_feat, proposal)
