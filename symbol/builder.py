@@ -830,7 +830,7 @@ class RoiAlign(RoiExtractor):
 
 class RoiAlignINT8(RoiExtractor):
     def __init__(self, pRoi):
-        super(RoiAlign, self).__init__(pRoi)
+        super(RoiAlignINT8, self).__init__(pRoi)
 
     def get_roi_feature(self, rcnn_feat, proposal):
         p = self.p
