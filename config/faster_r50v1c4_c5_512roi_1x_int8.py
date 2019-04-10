@@ -50,7 +50,7 @@ def get_config(is_train):
 
         class head:
             conv_channel = 512
-            conv_dot = 2048
+            conv_dot = 1024
             mean = (0, 0, 0, 0)
             std = (1, 1, 1, 1)
 
