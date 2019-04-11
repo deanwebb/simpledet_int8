@@ -269,24 +269,26 @@ class RpnHeadINT8(object):
         if p.fp16:
             conv = X.to_fp32(conv, name="rpn_conv_3x3_fp32")
         
-        #weight = mx.sym.Variable(name = "rpn_cls_logit_weight",shape=(2 * num_base_anchor,conv_channel,1,1))
-        #weight_q = mx.sym.Quantization_int8(weight)
+        weight = mx.sym.Variable(name = "rpn_cls_logit_weight",shape=(2 * num_base_anchor,conv_channel,1,1))
+        weight_q = mx.sym.Quantization_int8(weight)
         cls_logit = X.conv(
             conv_q,
             filter=2 * num_base_anchor,
             name="rpn_cls_logit",
             no_bias=False,
             init=X.gauss(0.01),
+            weight=weight_q
         )
 
-        #weight = mx.sym.Variable(name = "rpn_bbox_delta_weight",shape=(4 * num_base_anchor,conv_channel,1,1))
-        #weight_q = mx.sym.Quantization_int8(weight)
+        weight = mx.sym.Variable(name = "rpn_bbox_delta_weight",shape=(4 * num_base_anchor,conv_channel,1,1))
+        weight_q = mx.sym.Quantization_int8(weight)
         bbox_delta = X.conv(
             conv_q,
             filter=4 * num_base_anchor,
             name="rpn_bbox_delta",
             no_bias=False,
             init=X.gauss(0.01),
+            weight=weight_q
         )
 
         self._cls_logit = cls_logit
@@ -654,6 +656,33 @@ class BboxC5V1Head(BboxHead):
 
         return self._head_feat
 
+class BboxC5V1HeadINT8(BboxHead):
+    def __init__(self, pBbox):
+        super(BboxC5V1Head, self).__init__(pBbox)
+
+    def _get_bbox_head_logit(self, conv_feat):
+        if self._head_feat is not None:
+            return self._head_feat
+
+        from mxnext.backbone.resnet_v1_int8 import Builder
+
+        unit = Builder.resnet_stage(
+            conv_feat,
+            name="stage4",
+            num_block=3,
+            filter=2048,
+            stride=1,
+            dilate=1,
+            norm_type=self.p.normalizer,
+            norm_mom=0.9,
+            ndev=8
+        )
+        unit = X.to_fp32(unit, name='c5_to_fp32')
+        pool1 = X.pool(unit, global_pool=True, name='pool1')
+
+        self._head_feat = pool1
+
+        return self._head_feat
 
 class Backbone(object):
     def __init__(self, pBackbone):
