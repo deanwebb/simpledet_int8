@@ -850,9 +850,9 @@ class RoiAlignINT8(RoiExtractor):
             roi_feat = X.to_fp16(roi_feat, "roi_feat_to_fp16")
 
         roi_feat = X.reshape(roi_feat, (-3, -2))
-        #roi_feat_q = mx.sym.Quantization_int8(data=roi_feat,is_weight=False,\
-        #                                   ema_decay=0.99,delay_quant=0)
-        return roi_feat
+        roi_feat_q = mx.sym.Quantization_int8(data=roi_feat,is_weight=False,\
+                                           ema_decay=0.99,delay_quant=0)
+        return roi_feat_q
 
     def get_roi_feature_test(self, rcnn_feat, proposal):
         return self.get_roi_feature(rcnn_feat, proposal)
