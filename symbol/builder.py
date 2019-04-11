@@ -270,26 +270,24 @@ class RpnHeadINT8(object):
         if p.fp16:
             conv = X.to_fp32(conv, name="rpn_conv_3x3_fp32")
         
-        weight = mx.sym.Variable(name = "rpn_cls_logit_weight",shape=(2 * num_base_anchor,conv_channel,1,1))
-        weight_q = mx.sym.Quantization_int8(weight)
+        #weight = mx.sym.Variable(name = "rpn_cls_logit_weight",shape=(2 * num_base_anchor,conv_channel,1,1))
+        #weight_q = mx.sym.Quantization_int8(weight)
         cls_logit = X.conv(
             conv_q,
             filter=2 * num_base_anchor,
             name="rpn_cls_logit",
             no_bias=False,
             init=X.gauss(0.01),
-            weight=weight_q
         )
 
-        weight = mx.sym.Variable(name = "rpn_bbox_delta_weight",shape=(4 * num_base_anchor,conv_channel,1,1))
-        weight_q = mx.sym.Quantization_int8(weight)
+        #weight = mx.sym.Variable(name = "rpn_bbox_delta_weight",shape=(4 * num_base_anchor,conv_channel,1,1))
+        #weight_q = mx.sym.Quantization_int8(weight)
         bbox_delta = X.conv(
             conv_q,
             filter=4 * num_base_anchor,
             name="rpn_bbox_delta",
             no_bias=False,
             init=X.gauss(0.01),
-            weight=weight_q
         )
 
         self._cls_logit = cls_logit
