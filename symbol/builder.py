@@ -283,7 +283,7 @@ class RpnHeadINT8(object):
         weight = mx.sym.Variable(name = "rpn_bbox_delta_weight",shape=(4 * num_base_anchor,conv_channel,1,1))
         weight_q = mx.sym.Quantization_int8(weight)
         bbox_delta = X.conv(
-            conv,
+            conv_q,
             filter=4 * num_base_anchor,
             name="rpn_bbox_delta",
             no_bias=False,

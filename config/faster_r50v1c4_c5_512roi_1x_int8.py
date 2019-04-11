@@ -1,7 +1,7 @@
 from symbol.builder import FasterRcnn as Detector
 from symbol.builder import ResNet50V1INT8 as Backbone
 from symbol.builder import Neck
-from symbol.builder import RpnHead as RpnHead
+from symbol.builder import RpnHeadINT8 as RpnHead
 from symbol.builder import RoiAlignINT8 as RoiExtractor
 from symbol.builder import BboxC5V1Head as BboxHead
 from mxnext.complicate import normalizer_factory
