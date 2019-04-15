@@ -264,9 +264,8 @@ class RpnHeadINT8(object):
             weight=weight_q
         )
         
-        #conv_q = mx.sym.Quantization_int8(data=conv,is_weight=False,\
-        #                                   ema_decay=0.99,delay_quant=0)
-        conv_q = conv
+        conv_q = mx.sym.Quantization_int8(data=conv,is_weight=False,\
+                                           ema_decay=0.99,delay_quant=0)
         if p.fp16:
             conv = X.to_fp32(conv, name="rpn_conv_3x3_fp32")
         
