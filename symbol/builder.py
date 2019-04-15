@@ -269,24 +269,26 @@ class RpnHeadINT8(object):
         if p.fp16:
             conv = X.to_fp32(conv, name="rpn_conv_3x3_fp32")
         
-        #weight = mx.sym.Variable(name = "rpn_cls_logit_weight",shape=(2 * num_base_anchor,conv_channel,1,1))
-        #weight_q = mx.sym.Quantization_int8(weight)
+        weight = mx.sym.Variable(name = "rpn_cls_logit_weight",shape=(2 * num_base_anchor,conv_channel,1,1))
+        weight_q = mx.sym.Quantization_int8(weight)
         cls_logit = X.conv(
             conv_q,
             filter=2 * num_base_anchor,
             name="rpn_cls_logit",
             no_bias=False,
             init=X.gauss(0.01),
+            weight=weight_q
         )
 
-        #weight = mx.sym.Variable(name = "rpn_bbox_delta_weight",shape=(4 * num_base_anchor,conv_channel,1,1))
-        #weight_q = mx.sym.Quantization_int8(weight)
+        weight = mx.sym.Variable(name = "rpn_bbox_delta_weight",shape=(4 * num_base_anchor,conv_channel,1,1))
+        weight_q = mx.sym.Quantization_int8(weight)
         bbox_delta = X.conv(
             conv_q,
             filter=4 * num_base_anchor,
             name="rpn_bbox_delta",
             no_bias=False,
             init=X.gauss(0.01),
+            weight=weight_q
         )
 
         self._cls_logit = cls_logit
@@ -849,35 +851,6 @@ class RoiAlign(RoiExtractor):
         roi_feat = X.reshape(roi_feat, (-3, -2))
        
         return roi_feat
-
-    def get_roi_feature_test(self, rcnn_feat, proposal):
-        return self.get_roi_feature(rcnn_feat, proposal)
-
-class RoiAlignINT8(RoiExtractor):
-    def __init__(self, pRoi):
-        super(RoiAlignINT8, self).__init__(pRoi)
-
-    def get_roi_feature(self, rcnn_feat, proposal):
-        p = self.p
-
-        if p.fp16:
-            rcnn_feat = X.to_fp32(rcnn_feat, "rcnn_feat_to_fp32")
-
-        roi_feat = X.roi_align(
-            rcnn_feat,
-            rois=proposal,
-            out_size=p.out_size,
-            stride=p.stride,
-            name="roi_align"
-        )
-
-        if p.fp16:
-            roi_feat = X.to_fp16(roi_feat, "roi_feat_to_fp16")
-
-        roi_feat = X.reshape(roi_feat, (-3, -2))
-        roi_feat_q = mx.sym.Quantization_int8(data=roi_feat,is_weight=False,\
-                                           ema_decay=0.99,delay_quant=0)
-        return roi_feat_q
 
     def get_roi_feature_test(self, rcnn_feat, proposal):
         return self.get_roi_feature(rcnn_feat, proposal)
