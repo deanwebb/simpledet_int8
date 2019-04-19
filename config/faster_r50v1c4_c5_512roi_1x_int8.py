@@ -29,7 +29,7 @@ def get_config(is_train):
 
     class BackboneParam:
         fp16 = General.fp16
-         is_train=False
+        is_train=False
         normalizer = NormalizeParam.normalizer
 
 
@@ -112,15 +112,15 @@ def get_config(is_train):
     bbox_head = BboxHead(BboxParam)
     detector = Detector()
     if is_train:
+        BackboneParam.is_train=True
+        NeckParam.is_train=True
+        RpnParam.is_train=True
         backbone = Backbone(BackboneParam)
         neck = Neck(NeckParam)
         rpn_head = RpnHead(RpnParam)
         train_sym = detector.get_train_symbol(backbone, neck, rpn_head, roi_extractor, bbox_head)
         test_sym = None
     else:
-        BackboneParam.is_train=True
-        NeckParam.is_train=True
-        RpnParam.is_train=True
         backbone = Backbone(BackboneParam)
         neck = Neck(NeckParam)
         rpn_head = RpnHead(RpnParam)
