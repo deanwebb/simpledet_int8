@@ -29,7 +29,7 @@ def get_config(is_train):
 
     class BackboneParam:
         fp16 = General.fp16
-         is_train=False
+        is_train=False
         normalizer = NormalizeParam.normalizer
 
 
