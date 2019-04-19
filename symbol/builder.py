@@ -265,7 +265,7 @@ class RpnHeadINT8(object):
         )
         
         conv_q = mx.sym.Quantization_int8(data=conv,is_weight=False,\
-                                           ema_decay=0.99,delay_quant=0)
+                                           ema_decay=0.99,delay_quant=0,is_train=p.is_train)
         if p.fp16:
             conv = X.to_fp32(conv, name="rpn_conv_3x3_fp32")
         
@@ -675,7 +675,8 @@ class BboxC5V1HeadINT8(BboxHead):
             dilate=1,
             norm_type=self.p.normalizer,
             norm_mom=0.9,
-            ndev=8
+            ndev=8,
+            is_train=self.p.is_train
         )
         unit = X.to_fp32(unit, name='c5_to_fp32')
         pool1 = X.pool(unit, global_pool=True, name='pool1')
@@ -755,7 +756,7 @@ class ResNet50V1INT8(Backbone):
         super(ResNet50V1INT8, self).__init__(pBackbone)
         from mxnext.backbone.resnet_v1_int8 import Builder
         b = Builder()
-        self.symbol = b.get_backbone("msra", 50, "c4", pBackbone.normalizer, pBackbone.fp16)
+        self.symbol = b.get_backbone("msra", 50, "c4", pBackbone.normalizer, pBackbone.fp16,pBackbone.is_train)
 
     def get_rpn_feature(self):
         return self.symbol
