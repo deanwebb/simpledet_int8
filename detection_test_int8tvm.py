@@ -18,49 +18,81 @@ import importlib
 import mxnet as mx
 import numpy as np
 import six.moves.cPickle as pkl
+def calibrate_dataset(batch,shape):
+    for i,batch_data in enumerate(batch):
+        if(i>30):
+            break
+        data=batch_data.data[0].asnumpy()
+        im_info=batch_data.data[1].asnumpy()
+        im_id=batch_data.data[2].asnumpy()
+        rec_id=batch_data.data[3].asnumpy()
+        data_corped=[]
+        data=data.transpose((0,2,3,1))
+        for _,im in data:
+            data_corped.append(cv2.resize(im,shape,interpolation=cv2.INTER_LINEAR))
+        data_corped=np.array(data_corped,dtype=np.float32)
+        data_corped.transpose((0,3,1,2))
+        im_info[0]=np.float32(shape[0])
+        im_info[1]=np.float32(shape[1])
+        yield {'data':tvm.nd.array(data_corped,ctx=tvm.gpu(0)),'im_info':tvm.nd.array(im_info,ctx=tvm.gpu(0)),\
+               'im_id':tvm.nd.array(im_id,ctx=tvm.gpu(0)),'rec_id':tvm.nd.array(rec_id,ctx=tvm.gpu(0))}
 
+def quantize_mx_sym(mx_sym,shape,arg_params,aux_params):
+    shape_im=shape['data'][2:]
+    sym, params = relay.frontend.from_mxnet(mx_sym, shape, arg_params=arg_params, aux_params=aux_params)
+    with relay.quantize.qconfig(skip_k_conv=0):
+        sym=relay.quantize.quantize(sym,params=params)
+    sym=relay.ir_pass.infer_type(sym)
+    return(sym,params)
+        
 
 class TVMTester(object):
-    def __init__(self, mx_sym, shape, arg_params, aux_params,GPU_id):
+    def __init__(self, sym_quant, shape, params,GPU_id):
         self.batch_size = shape['data'][0]
         self.im_shape = shape['data'][2:]
-        sym, params = relay.frontend.from_mxnet(mx_sym, shape, arg_params=arg_params, aux_params=aux_params)
-        with relay.quantize.qconfig(skip_k_conv=0):
-            sym = relay.quantize.quantize(sym, params=params)
-        sym = relay.ir_pass.infer_type(sym)
+
 
         target = tvm.target.create('cuda -model=1080ti')
 
         with relay.build_config(opt_level=3):
-            graph, lib, params = relay.build(sym, params=params, target=target)
+            graph, lib, params = relay.build(sym_quant, params=params, target=target)
         self.mod = graph_runtime.create(graph, lib, tvm.gpu(GPU_id))
         self.mod.set_input(**params)
 
         self.ctx = tvm.gpu(GPU_id)
 
 
-    def preprocessing(self, ims):
-        im_infos = [None] * self.batch_size
-        height, width = self.im_shape
-        self.im_info = np.array([height, width, 1], dtype=np.float32)
+    def preprocessing(self, batch_data):
+        data=batch_data.data[0].asnumpy()
+        im_info=batch_data.data[1].asnumpy()
+        im_id=batch_data.data[2].asnumpy()
+        rec_id=batch_data.data[3].asnumpy()
+        data_resized=[]
+        data=data.transpose((0,2,3,1))
+        for i, im in enumerate(data):
+            data_resized.append(cv2.resize(im, self.im_shape, interpolation=cv2.INTER_LINEAR))
+        data_resized=np.array(data_resized,dtype=np.float32)
+        data_resized=data_resized.transpose((0,3,1,2))
 
-        for i, im in enumerate(ims):
-            ims[i] = cv2.resize(im, self.im_shape, interpolation=cv2.INTER_LINEAR)
-            im_infos[i] = self.im_info
-        data_batch = np.array(ims, dtype=np.float32)
-        data_batch = np.transpose(data_batch, (0, 3, 2, 1))
-        im_infos = np.array(im_infos)
-        data_batch = {'data': tvm.nd.array(data_batch, ctx=self.ctx), 'im_info': tvm.nd.array(im_infos, ctx=self.ctx)}
+        im_info[0] = np.float32(self.im_info[0])
+        im_info[1] = np.float32(self.im_info[1])
+
+        data_batch = {'data': tvm.nd.array(data_batch, ctx=self.ctx), 'im_info': tvm.nd.array(im_info, ctx=self.ctx),\
+                      'im_id':tvm.nd.array(im_id, ctx=self.ctx),'rec_id':tvm.nd.array(rec_id, ctx=self.ctx)}
         return data_batch
 
 
-    def forward(self, ims,is_train=False):
-        data_batch = self.preprocessing(ims)
+    def forward(self,batch_data,is_train=False):
+        data_batch = self.preprocessing(batch_data)
         self.mod.set_input(**data_batch)
         self.mod.run()
     
-    def get_outputs():
-        return(self.mod.get_output())
+    def get_outputs(self):
+        num = self.mod.get_num_outputs()
+        output=[]
+        for i in range(num):
+            output.append(self.mod.get_output(i))
+        return(output)
 
 
 def parse_args():
@@ -85,10 +117,20 @@ if __name__ == "__main__":
     sym.save(pTest.model.prefix + "_test.json")
 
     image_sets = pDataset.image_set
+    image_sets_cali = ("coco_valminusminival2014",)
+
     roidbs = [pkl.load(open("data/cache/{}.roidb".format(i), "rb"), encoding="latin1") for i in image_sets]
     roidb = reduce(lambda x, y: x + y, roidbs)
     roidb = pTest.process_roidb(roidb)
+
+    roidbs_cali = [pkl.load(open("data/cache/{}.roidb".format(i), "rb"), encoding="latin1") for i in image_sets_cali]
+    roidb_cali = reduce(lambda x, y: x + y, roidbs_cali)
+    roidb_cali = pTest.process_roidb(roidb_cali)
+
     for i, x in enumerate(roidb):
+        x["rec_id"] = i
+    
+    for i, x in enumerate(roidb_cali):
         x["rec_id"] = i
 
     loader = Loader(roidb=roidb,
@@ -102,16 +144,34 @@ if __name__ == "__main__":
                     worker_queue_depth=2,
                     collector_queue_depth=2,
                     kv=None)
-
+    
+    loader_cali = Loader(roidb=roidb_cali,
+                         transform=transform,
+                         data_name=data_name,
+                         label_name=label_name,
+                         batch_size=1,
+                         shuffle=False,
+                         num_worker=4,
+                         num_collector=2,
+                         worker_queue_depth=2,
+                         collector_queue_depth=2,
+                         kv=None)            
     print("total number of images: {}".format(loader.total_record))
+    print("total number of images_cali: {}".format(loader_cali.total_record))
 
     data_names = [k[0] for k in loader.provide_data]
+    
+    arg_params, aux_params = load_checkpoint(pTest.model.prefix, pTest.model.epoch)
+    shape_={'data':loader.provide_data[0][1],\
+            'im_info':loader.provide_data[1][1],\
+            'im_id':loader.provide_data[2][1],\
+            'rec_id':loader.provide_data[3][1]}
 
+    sym_q,params=quantize_mx_sym(sym,shape_,arg_params,aux_params)
     execs = []
     for i in pKv.gpus:
         #ctx = mx.gpu(i)
-        arg_params, aux_params = load_checkpoint(pTest.model.prefix, pTest.model.epoch)
-        mod=TVMTester(sym,{'data':loader.provide_data},arg_params,aux_params,i)
+        mod=TVMTester(sym_q,shape_,params,i)
         #mod = DetModule(sym, data_names=data_names, context=ctx)
         #mod.bind(data_shapes=loader.provide_data, for_training=False)
         #mod.set_params(arg_params, aux_params, allow_extra=False)
