@@ -28,20 +28,20 @@ def calibrate_dataset(batch,shape):
         rec_id=batch_data.data[3].asnumpy()
         data_corped=[]
         data=data.transpose((0,2,3,1))
-        for _,im in data:
+        for _,im in enumerate(data):
             data_corped.append(cv2.resize(im,shape,interpolation=cv2.INTER_LINEAR))
         data_corped=np.array(data_corped,dtype=np.float32)
         data_corped.transpose((0,3,1,2))
-        im_info[0]=np.float32(shape[0])
-        im_info[1]=np.float32(shape[1])
+        im_info[0][0]=np.float32(shape[0])
+        im_info[0][1]=np.float32(shape[1])
         yield {'data':tvm.nd.array(data_corped,ctx=tvm.gpu(0)),'im_info':tvm.nd.array(im_info,ctx=tvm.gpu(0)),\
                'im_id':tvm.nd.array(im_id,ctx=tvm.gpu(0)),'rec_id':tvm.nd.array(rec_id,ctx=tvm.gpu(0))}
 
-def quantize_mx_sym(mx_sym,shape,arg_params,aux_params):
+def quantize_mx_sym(mx_sym,shape,arg_params,aux_params,loader_cali):
     shape_im=shape['data'][2:]
     sym, params = relay.frontend.from_mxnet(mx_sym, shape, arg_params=arg_params, aux_params=aux_params)
     with relay.quantize.qconfig(skip_k_conv=0):
-        sym=relay.quantize.quantize(sym,params=params)
+        sym=relay.quantize.quantize(sym,params=params,dataset=calibrate_dataset(loader_cali,shape_im))
     sym=relay.ir_pass.infer_type(sym)
     return(sym,params)
         
@@ -56,7 +56,9 @@ class TVMTester(object):
 
         with relay.build_config(opt_level=3):
             graph, lib, params = relay.build(sym_quant, params=params, target=target)
+        print("build finished")
         self.mod = graph_runtime.create(graph, lib, tvm.gpu(GPU_id))
+        print("created")
         self.mod.set_input(**params)
 
         self.ctx = tvm.gpu(GPU_id)
@@ -74,8 +76,8 @@ class TVMTester(object):
         data_resized=np.array(data_resized,dtype=np.float32)
         data_resized=data_resized.transpose((0,3,1,2))
 
-        im_info[0] = np.float32(self.im_info[0])
-        im_info[1] = np.float32(self.im_info[1])
+        im_info[0][0] = np.float32(self.im_shape[0])
+        im_info[0][1] = np.float32(self.im_shape[1])
 
         data_batch = {'data': tvm.nd.array(data_batch, ctx=self.ctx), 'im_info': tvm.nd.array(im_info, ctx=self.ctx),\
                       'im_id':tvm.nd.array(im_id, ctx=self.ctx),'rec_id':tvm.nd.array(rec_id, ctx=self.ctx)}
@@ -166,17 +168,14 @@ if __name__ == "__main__":
             'im_info':loader.provide_data[1][1],\
             'im_id':loader.provide_data[2][1],\
             'rec_id':loader.provide_data[3][1]}
-
-    sym_q,params=quantize_mx_sym(sym,shape_,arg_params,aux_params)
+    print(shape_)
+    sym_q,params=quantize_mx_sym(sym,shape_,arg_params,aux_params,loader_cali)
+    print("symbol quantized")
     execs = []
     for i in pKv.gpus:
-        #ctx = mx.gpu(i)
         mod=TVMTester(sym_q,shape_,params,i)
-        #mod = DetModule(sym, data_names=data_names, context=ctx)
-        #mod.bind(data_shapes=loader.provide_data, for_training=False)
-        #mod.set_params(arg_params, aux_params, allow_extra=False)
         execs.append(mod)
-
+    print("all model build")
     all_outputs = []
 
     data_queue = Queue(100)
@@ -184,9 +183,13 @@ if __name__ == "__main__":
 
     def eval_worker(exe, data_queue, result_queue):
         while True:
+            print("new image start")
             batch = data_queue.get()
+            print("batch get")
             exe.forward(batch, is_train=False)
+            print("forward finished")
             out = [x.asnumpy() for x in exe.get_outputs()]
+            print("one image processed")
             result_queue.put(out)
 
     workers = [Thread(target=eval_worker, args=(exe, data_queue, result_queue)) for exe in execs]
