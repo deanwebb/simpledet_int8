@@ -20,7 +20,7 @@ import numpy as np
 import six.moves.cPickle as pkl
 def calibrate_dataset(batch,shape):
     for i,batch_data in enumerate(batch):
-        if(i>30):
+        if(i>20):
             break
         data=batch_data.data[0].asnumpy()
         im_info=batch_data.data[1].asnumpy()
@@ -42,6 +42,7 @@ def quantize_mx_sym(mx_sym,shape,arg_params,aux_params,loader_cali):
     sym, params = relay.frontend.from_mxnet(mx_sym, shape, arg_params=arg_params, aux_params=aux_params)
     with relay.quantize.qconfig(skip_k_conv=0):
         sym=relay.quantize.quantize(sym,params=params,dataset=calibrate_dataset(loader_cali,shape_im))
+        #sym=relay.quantize.quantize(sym,params=params,dataset=None)
     sym=relay.ir_pass.infer_type(sym)
     return(sym,params)
         
@@ -79,7 +80,7 @@ class TVMTester(object):
         im_info[0][0] = np.float32(self.im_shape[0])
         im_info[0][1] = np.float32(self.im_shape[1])
 
-        data_batch = {'data': tvm.nd.array(data_batch, ctx=self.ctx), 'im_info': tvm.nd.array(im_info, ctx=self.ctx),\
+        data_batch = {'data': tvm.nd.array(data_resized, ctx=self.ctx), 'im_info': tvm.nd.array(im_info, ctx=self.ctx),\
                       'im_id':tvm.nd.array(im_id, ctx=self.ctx),'rec_id':tvm.nd.array(rec_id, ctx=self.ctx)}
         return data_batch
 
@@ -141,10 +142,10 @@ if __name__ == "__main__":
                     label_name=label_name,
                     batch_size=1,
                     shuffle=False,
-                    num_worker=4,
+                    num_worker=8,
                     num_collector=2,
-                    worker_queue_depth=2,
-                    collector_queue_depth=2,
+                    worker_queue_depth=4,
+                    collector_queue_depth=4,
                     kv=None)
     
     loader_cali = Loader(roidb=roidb_cali,
@@ -157,9 +158,10 @@ if __name__ == "__main__":
                          num_collector=2,
                          worker_queue_depth=2,
                          collector_queue_depth=2,
-                         kv=None)            
+                         kv=None)
+#    loader_cali=None            
     print("total number of images: {}".format(loader.total_record))
-    print("total number of images_cali: {}".format(loader_cali.total_record))
+#    print("total number of images_cali: {}".format(loader_cali.total_record))
 
     data_names = [k[0] for k in loader.provide_data]
     
@@ -183,13 +185,9 @@ if __name__ == "__main__":
 
     def eval_worker(exe, data_queue, result_queue):
         while True:
-            print("new image start")
             batch = data_queue.get()
-            print("batch get")
             exe.forward(batch, is_train=False)
-            print("forward finished")
             out = [x.asnumpy() for x in exe.get_outputs()]
-            print("one image processed")
             result_queue.put(out)
 
     workers = [Thread(target=eval_worker, args=(exe, data_queue, result_queue)) for exe in execs]
@@ -209,6 +207,7 @@ if __name__ == "__main__":
 
     for _ in range(loader.total_record):
         r = result_queue.get()
+        print(data_queue.qsize())
 
         rid, id, info, cls, box = r
         rid, id, info, cls, box = rid.squeeze(), id.squeeze(), info.squeeze(), cls.squeeze(), box.squeeze()
