@@ -207,7 +207,7 @@ if __name__ == "__main__":
 
     for _ in range(loader.total_record):
         r = result_queue.get()
-        print(data_queue.qsize())
+        print(result_queue.qsize())
 
         rid, id, info, cls, box = r
         rid, id, info, cls, box = rid.squeeze(), id.squeeze(), info.squeeze(), cls.squeeze(), box.squeeze()
