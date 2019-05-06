@@ -4,6 +4,7 @@ from tvm.contrib import graph_runtime
 import numpy as np
 import cv2
 
+from multiprocessing import Process
 import os
 
 from core.detection_module import DetModule
@@ -190,11 +191,15 @@ if __name__ == "__main__":
             out = [x.asnumpy() for x in exe.get_outputs()]
             result_queue.put(out)
 
-    workers = [Thread(target=eval_worker, args=(exe, data_queue, result_queue)) for exe in execs]
-    for w in workers:
-        w.daemon = True
-        w.start()
-
+    #workers = [Thread(target=eval_worker, args=(exe, data_queue, result_queue)) for exe in execs]
+    #for w in workers:
+    #    w.daemon = True
+    #    w.start()
+        
+    pworkers = [Process(target=eval_worker, args=(exe, data_queue, result_queue)) for exe in execs]
+    for pw in pworkers:
+        pw.start()
+        pw.join()
     import time
     t1_s = time.time()
 
